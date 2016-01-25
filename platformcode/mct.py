@@ -321,14 +321,19 @@ def play(url, is_view=None):
                     # -- El usuario cancelo el visionado --------
                     # -- Terminar                               -
                     if player.ended:
-                        _index, video_file, video_size = get_video_files_sizes( info )
-                        if _index == -1:
-                            # -- Diálogo eliminar archivos ----------
-                            remove_files( download, torrent_file, video_file, ses, h )
-                            return
+                        if info.num_files() > 1:
+                            _index, video_file, video_size = get_video_files_sizes( info )					
+                            if _index == -1:
+                                # -- Diálogo eliminar archivos ----------
+                                remove_files( download, torrent_file, video_file, ses, h )
+                                return
+                            else:
+                                set_porcentage_to_play(video_size)
+                                piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
                         else:
-                            set_porcentage_to_play(video_size)
-                            piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
+                                # -- Diálogo eliminar archivos ----------
+                                remove_files( download, torrent_file, video_file, ses, h )
+                                return
 
         # -- Kodi - Se cerró el visionado -----------------------
         # -- Continuar | Terminar                               -
@@ -344,7 +349,33 @@ def play(url, is_view=None):
                 is_view=None
             else:
                 # -- Terminar ---------------------------------------
-                _index, video_file, video_size = get_video_files_sizes( info )
+                if info.num_files() > 1:	
+                    _index, video_file, video_size = get_video_files_sizes( info )			
+                    if _index == -1:
+                        # -- Diálogo eliminar archivos                      -
+                        remove_files( download, torrent_file, video_file, ses, h )
+                        return
+                    else:
+                        set_porcentage_to_play(video_size)
+                        piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
+                        is_view=None
+                        dp = xbmcgui.DialogProgress()
+                        dp.create('pelisalacarta-MCT')
+                else:
+                    # -- Diálogo eliminar archivos ----------
+                    remove_files( download, torrent_file, video_file, ses, h )
+                    return
+
+        # -- Mostar progeso antes del visionado -----------------
+        if is_view != "Ok" :
+            dp.update(porcent, message, msg_file)
+
+        # -- Se canceló el progreso antes del visionado ---------
+        # -- Terminar                                           -
+        if dp.iscanceled():
+            dp.close()
+            if info.num_files( )> 1:	
+                _index, video_file, video_size = get_video_files_sizes( info )			
                 if _index == -1:
                     # -- Diálogo eliminar archivos                      -
                     remove_files( download, torrent_file, video_file, ses, h )
@@ -355,26 +386,10 @@ def play(url, is_view=None):
                     is_view=None
                     dp = xbmcgui.DialogProgress()
                     dp.create('pelisalacarta-MCT')
-
-        # -- Mostar progeso antes del visionado -----------------
-        if is_view != "Ok" :
-            dp.update(porcent, message, msg_file)
-
-        # -- Se canceló el progreso antes del visionado ---------
-        # -- Terminar                                           -
-        if dp.iscanceled():
-            dp.close()
-            _index, video_file, video_size = get_video_files_sizes( info )
-            if _index == -1:
-                # -- Diálogo eliminar archivos ----------------------
+            else:
+                # -- Diálogo eliminar archivos ----------
                 remove_files( download, torrent_file, video_file, ses, h )
                 return
-            else:
-                set_porcentage_to_play(video_size)
-                piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
-                is_view=None
-                dp = xbmcgui.DialogProgress()
-                dp.create('pelisalacarta-MCT')
 
     # -- Kodi - Error? - No debería llegar aquí -----------------
     if is_view == "Ok" and not xbmc.Player().isPlaying():
@@ -606,7 +621,7 @@ def set_priority_pieces(h, _index, video_file, video_size, _log=False):
         print "#### h.file_priorities() ## %s ##" % h.file_priorities()
         print "#### h.piece_priorities() ## %s ##" % h.piece_priorities()
         print "#### _index ## %s ##" % _index
-        print "#### video_file ## %s ##" % video_file
+        print "#### video_file ## %s ##" % video_file.encode('ascii','ignore')
         print "#### video_size ## %s ##" % video_size
 
     for i, _set in enumerate(h.file_priorities()):
