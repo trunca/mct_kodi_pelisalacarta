@@ -19,24 +19,35 @@ from platformcode import library
 
 from core import scrapertools
 from core import config
-from core import jsontools
+
+import time
+time_sleep = 2
+
+__pieces__ = 5
 
 def play(url, is_view=None):
 
+    # -- Necesario para algunas webs -------------------------- -
     if not url.endswith(".torrent") and not url.startswith("magnet"):
-        t_file = scrapertools.get_header_from_response(url, header_to_get="location")
+        t_file = scrapertools.get_header_from_response(url,header_to_get="location")
         if len(t_file) > 0:
             url = t_file
-            t_file = scrapertools.get_header_from_response(url, header_to_get="location")
+            t_file = scrapertools.get_header_from_response(url,header_to_get="location")
         if len(t_file) > 0:
             url = t_file
 
+    # -- Crear dos carpetas en descargas para los archivos ------
     save_path_videos = os.path.join( config.get_setting("downloadpath") , "torrent-videos" )
     save_path_torrents = os.path.join( config.get_setting("downloadpath") , "torrent-torrents" )
     if not os.path.exists( save_path_torrents ): os.mkdir(save_path_torrents)
 
+    # -- Usar - archivo torrent desde web, meagnet o HD ---------
     if not os.path.isfile(url) and not url.startswith("magnet"):
+        # -- http - crear archivo torrent -----------------------
         data = url_get(url)
+        # -- El nombre del torrent será el que contiene en los --
+        # -- datos.                                             -
+        #re_name_len = int( scrapertools.get_match(data,':name(\d+):') )
         re_name = library.title_to_folder_name( urllib.unquote( scrapertools.get_match(data,':name\d+:(.*?)\d+:') ) )
         torrent_file = os.path.join(save_path_torrents, re_name+'.torrent')
 
@@ -44,11 +55,19 @@ def play(url, is_view=None):
         f.write(data)
         f.close()
     elif os.path.isfile(url):
+        # -- file - para usar torrens desde el HD ---------------
         torrent_file = url
     else:
+        # -- magnet ---------------------------------------------
         torrent_file = url
+    # -----------------------------------------------------------
 
+    # -- MCT - MiniClienteTorrent -------------------------------
     ses = lt.session()
+
+    print "#########################"
+    print lt.version
+    print "#########################"
 
     ses.add_dht_router("router.bittorrent.com",6881)
     ses.add_dht_router("router.utorrent.com",6881)
@@ -88,7 +107,7 @@ def play(url, is_view=None):
     ]
 
     video_file = ""
-
+    ## -- magnet2torrent ----------------------------------------
     if torrent_file.startswith("magnet"):
         tempdir = tempfile.mkdtemp()
         params = {
@@ -114,166 +133,277 @@ def play(url, is_view=None):
         f.close()
         ses.remove_torrent(h)
         shutil.rmtree(tempdir)
+    # -----------------------------------------------------------
 
+    # -- Archivos torrent ---------------------------------------
     e = lt.bdecode(open(torrent_file, 'rb').read())
     info = lt.torrent_info(e)
 
+    # -- El más gordo o uno de los más gordo se entiende que es -
+    # -- el vídeo o es el vídeo que se usará como referencia    -
+    # -- para el tipo de archivo                                -
     _index_file, _video_file, _size_file = get_video_file(info)
 
     if not _video_file.endswith('.avi'):
+        print "##### storage_mode_t.storage_mode_sparse (no avi) #####"
         h = ses.add_torrent( { 'ti':info, 'save_path': save_path_videos, 'trackers':trackers, 'storage_mode':lt.storage_mode_t.storage_mode_sparse } )
     else:
+        print "##### storage_mode_t.storage_mode_allocate (avi) #####"
         h = ses.add_torrent( { 'ti':info, 'save_path': save_path_videos, 'trackers':trackers, 'storage_mode':lt.storage_mode_t.storage_mode_allocate } )
+    ## ----------------------------------------------------------
 
-    h.set_sequential_download(True)
-
-    h.force_reannounce()
-    h.force_dht_announce()
-
+    # -- Prioritarizar ------------------------------------------
     _index, video_file, video_size = get_video_files_sizes( info )
     if _index == -1:
         _index = _index_file
         video_file = _video_file
         video_size = _size_file
 
-    is_greater_num_pieces = False
-    is_greater_num_pieces_plus = False
-    is_greater_num_pieces_pause = False
+    piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
 
-    porcent4first_pieces = int( video_size / 1073741824 )
-    if porcent4first_pieces < 10: porcent4first_pieces = 10
-    if porcent4first_pieces > 50: porcent4first_pieces = 50
-    num_pieces_to_resume = int( video_size / 2147483648 )
-    if num_pieces_to_resume < 5: num_pieces_to_resume = 5
-    if num_pieces_to_resume > 10: num_pieces_to_resume = 10
+    # -- Descarga secuencial - trozo 1, trozo 2, ... ------------
+    #h.set_sequential_download(True)
 
-    piece_set = set_priority_pieces(h, _index, video_file, video_size)
+    h.force_reannounce()
+    h.force_dht_announce()
 
+    # -- Crear diálogo de progreso para el primer bucle ---------
     dp = xbmcgui.DialogProgress()
     dp.create('pelisalacarta-MCT')
 
+    # -- Para log -----------------------------------------------
+    timer = time.time()
+
+    # -- Local con el número de piezas por cluster global -------
+    _cluster_pieces = __pieces__
+
+    '''
+    # -- Estimar cuando se comenzará el visionado ---------------
+    # -- Pruebas: Porcentaje fijo                               -
+    porcentage_to_play = 1.50
+    '''
+
+    # -- Estimar cuando se comenzará el visionado ---------------
+    # -- Pruebas: Porcentaje segun tamaño cuando sólo hay un    -
+    # -- vídeo en torrent                                       -
+    porcentage_to_play = set_porcentage_to_play(video_size)
+
+    # -- Doble bucle anidado ------------------------------------
+    # -- Descarga - Primer bucle                                -
     while not h.is_seed():
         s = h.status()
+
         xbmc.sleep(100)
+
+        # -- Recuperar los datos del progreso -------------------
         message, porcent, msg_file, s, download = getProgress(h, video_file)
 
+        # -- Si hace 'checking' existe descarga -----------------
+        # -- 'download' Se usará para saber si hay datos        -
+        # -- descargados para el diálogo de 'remove_files'      -
         if s.state == 1: download = 1
 
-        first_pieces = True
-        for i in range( piece_set[0], piece_set[porcent4first_pieces] ):
-            first_pieces&= h.have_piece(i)
+        # -- Añadido: Log para las pruebas ----------------------
+        # -- Print log have_piece. Procedimiento al final del   -
+        # -- archivo                                            -
+        timer2 = time.time() - timer
+        if timer2 > time_sleep:
+            print_have_piece_set(h, piece_set)
+            timer = time.time()
 
-        if is_view != "Ok" and first_pieces:
+            # -- Print log y procedimiento incrementar cluster --
+            # -- Parte 1                                        -
+            _cluster = False
+            if _cluster_pieces < len(piece_set):
+                _cluster = \
+                    cluster_stat(
+                        h,
+                        piece_set[_cluster_pieces - __pieces__],
+                        piece_set[_cluster_pieces],
+                        _log=True
+                    )
+            else: _cluster_pieces = len(piece_set) -1
+            # -- Parte 2                                        -
+            if _cluster:
+                _cluster_pieces+= __pieces__
+                cluster_set(h, _cluster_pieces, piece_set, 7, _log=True)
+
+                _cluster_pieces2 = _cluster_pieces + __pieces__
+                cluster_set(h, _cluster_pieces2, piece_set, 6, _log=True)
+
+                _cluster_pieces3 = _cluster_pieces2 + __pieces__
+                cluster_set(h, _cluster_pieces3, piece_set, 5, _log=True)
+
+        # -- Player - play --------------------------------------
+        option_view = ( (s.progress * 100) >= porcentage_to_play )
+
+        # -- Modificado: Se tendrá en cuenta el primer cluster --
+        # -- completado para el inicio de la reproducción       -
+        first_cluster = True
+        _p = "##### first_cluster: "
+        for i in range( piece_set[0], piece_set[__pieces__] ):
+            _p+= "[%s:%s]" % ( i, h.have_piece(i) )
+            first_cluster&= h.have_piece(i)
+        print _p
+
+        if (option_view and is_view != "Ok" and s.state == 3 and first_cluster ):
+            print "##### porcentage_to_play ## %s ##" % porcentage_to_play
+
             is_view = "Ok"
             dp.close()
 
+            # -- Player - Ver el vídeo --------------------------
             player = play_video()
             player.play( os.path.join( save_path_videos, video_file ) )
 
-            is_greater_num_pieces_canceled = 0
-            continuous_pieces = 0
-            porcent_time = 0.00
-            current_piece = 0
-
-            not_resume = True
-
+            # -- Segundo bucle - Player - Control de eventos ----
             while player.isPlaying():
                 xbmc.sleep(100)
-                if not_resume:
-                    player.seekTime(0)
-                    not_resume = False
 
-                continuous_pieces = count_completed_continuous_pieces(h, piece_set)
-                if xbmc.Player().isPlaying():
-                    porcent_time = player.getTime() / player.getTotalTime() * 100
-                    current_piece = int( porcent_time / 100 * len(piece_set) )
+                # -- Añadido: Log para las pruebas --------------
+                # -- Print log have_piece. Procedimiento al     -
+                # -- final del archivo                          -
+                timer2 = time.time() - timer
+                if timer2 > time_sleep:
+                    print_have_piece_set(h, piece_set)
+                    timer = time.time()
 
-                    is_greater_num_pieces = (current_piece > continuous_pieces - num_pieces_to_resume)
-                    is_greater_num_pieces_plus = (current_piece + porcent4first_pieces > continuous_pieces)
-                    is_greater_num_pieces_finished = (current_piece + porcent4first_pieces >= len(piece_set))
+                    # -- Print log y procedimiento incrementar --
+                    # -- cluster                                -
+                    # -- Parte 1                                -
+                    _cluster = False
+                    if _cluster_pieces < len(piece_set):
+                        _cluster = \
+                            cluster_stat(
+                                h,
+                                piece_set[_cluster_pieces - __pieces__],
+                                piece_set[_cluster_pieces],
+                                _log=True
+                            )
+                    else: _cluster_pieces = len(piece_set) -1
+                    # -- Parte 2                                -
+                    if _cluster:
+                        _cluster_pieces+= __pieces__
+                        cluster_set(h, _cluster_pieces, piece_set, 7, _log=True)
 
-                    if is_greater_num_pieces and not player.paused and not is_greater_num_pieces_finished:
-                        is_greater_num_pieces_pause = True
-                        player.pause()
+                        _cluster_pieces2 = _cluster_pieces + __pieces__
+                        cluster_set(h, _cluster_pieces2, piece_set, 6, _log=True)
 
+                        _cluster_pieces3 = _cluster_pieces2 + __pieces__
+                        cluster_set(h, _cluster_pieces3, piece_set, 5, _log=True)
+
+                # -- Cerrar el diálogo de progreso --------------
                 if player.resumed:
                     dp.close()
 
+                # -- Mostrar el diálogo de progreso -------------
                 if player.paused:
+                    # -- Crear diálogo si no existe -------------
                     if not player.statusDialogoProgress:
                         dp = xbmcgui.DialogProgress()
                         dp.create('pelisalacarta-MCT')
                         player.setDialogoProgress()
 
+                    # -- Diálogos de estado en el visionado -----
                     if not h.is_seed():
+                        # -- Recuperar los datos del progreso ---
                         message, porcent, msg_file, s, download = getProgress(h, video_file)
                         dp.update(porcent, message, msg_file)
                     else:
                         dp.update(100, "Descarga completa: " + video_file)
 
+                    # -- Se canceló el progreso en el visionado -
+                    # -- Continuar                              -
                     if dp.iscanceled():
                         dp.close()
                         player.pause()
 
-                    if dp.iscanceled() and is_greater_num_pieces_pause:
-                        is_greater_num_pieces_canceled+= 1
-                        if is_greater_num_pieces_canceled == 3:
-                            player.stop()
-
-                    if not dp.iscanceled() and not is_greater_num_pieces_plus and is_greater_num_pieces_pause:
-                        dp.close()
-                        player.pause()
-                        is_greater_num_pieces_pause = False
-                        is_greater_num_pieces_canceled = 0
-
+                    # -- El usuario cancelo el visionado --------
+                    # -- Terminar                               -
                     if player.ended:
-                        remove_files( download, torrent_file, video_file, ses, h )
-                        return
+                        if info.num_files() > 1:
+                            _index, video_file, video_size = get_video_files_sizes( info )					
+                            if _index == -1:
+                                # -- Diálogo eliminar archivos ----------
+                                remove_files( download, torrent_file, video_file, ses, h )
+                                return
+                            else:
+                                set_porcentage_to_play(video_size)
+                                piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
+                        else:
+                                # -- Diálogo eliminar archivos ----------
+                                remove_files( download, torrent_file, video_file, ses, h )
+                                return
 
+        # -- Kodi - Se cerró el visionado -----------------------
+        # -- Continuar | Terminar                               -
         if is_view == "Ok" and not xbmc.Player().isPlaying():
 
-            if info.num_files() == 1:
-                d = xbmcgui.Dialog()
-                ok = d.yesno('pelisalacarta-MCT', 'XBMC-Kodi Cerró el vídeo.', '¿Continuar con la sesión?')
-            else: ok = False
+            # -- Diálogo continuar o terminar -------------------
+            d = xbmcgui.Dialog()
+            ok = d.yesno('pelisalacarta-MCT', 'XBMC-Kodi Cerró el vídeo.', '¿Continuar con la sesión?')
 
+            # -- SI -------------------------------------------------
             if ok:
+                # -- Continuar --------------------------------------
                 is_view=None
             else:
-                _index, video_file, video_size = get_video_files_sizes( info )
-                if _index == -1 or info.num_files() == 1:
+                # -- Terminar ---------------------------------------
+                if info.num_files() > 1:	
+                    _index, video_file, video_size = get_video_files_sizes( info )			
+                    if _index == -1:
+                        # -- Diálogo eliminar archivos                      -
+                        remove_files( download, torrent_file, video_file, ses, h )
+                        return
+                    else:
+                        set_porcentage_to_play(video_size)
+                        piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
+                        is_view=None
+                        dp = xbmcgui.DialogProgress()
+                        dp.create('pelisalacarta-MCT')
+                else:
+                    # -- Diálogo eliminar archivos ----------
                     remove_files( download, torrent_file, video_file, ses, h )
                     return
-                else:
-                    piece_set = set_priority_pieces(h, _index, video_file, video_size)
-                    is_view=None
-                    dp = xbmcgui.DialogProgress()
-                    dp.create('pelisalacarta-MCT')
 
+        # -- Mostar progeso antes del visionado -----------------
         if is_view != "Ok" :
             dp.update(porcent, message, msg_file)
 
+        # -- Se canceló el progreso antes del visionado ---------
+        # -- Terminar                                           -
         if dp.iscanceled():
             dp.close()
-            _index, video_file, video_size = get_video_files_sizes( info )
-            if _index == -1 or info.num_files() == 1:
+            if info.num_files( )> 1:	
+                _index, video_file, video_size = get_video_files_sizes( info )			
+                if _index == -1:
+                    # -- Diálogo eliminar archivos                      -
+                    remove_files( download, torrent_file, video_file, ses, h )
+                    return
+                else:
+                    set_porcentage_to_play(video_size)
+                    piece_set = set_priority_pieces(h, _index, video_file, video_size, _log=True)
+                    is_view=None
+                    dp = xbmcgui.DialogProgress()
+                    dp.create('pelisalacarta-MCT')
+            else:
+                # -- Diálogo eliminar archivos ----------
                 remove_files( download, torrent_file, video_file, ses, h )
                 return
-            else:
-                piece_set = set_priority_pieces(h, _index, video_file, video_size)
-                is_view=None
-                dp = xbmcgui.DialogProgress()
-                dp.create('pelisalacarta-MCT')
 
+    # -- Kodi - Error? - No debería llegar aquí -----------------
     if is_view == "Ok" and not xbmc.Player().isPlaying():
         dp.close()
+        # -- Diálogo eliminar archivos --------------------------
         remove_files( download, torrent_file, video_file, ses, h )
 
     return
 
+# -- Progreso de la descarga ------------------------------------
 def getProgress(h, video_file):
 
     s = h.status()
+
     state_str = ['queued', 'checking', 'downloading metadata', \
         'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
 
@@ -289,6 +419,7 @@ def getProgress(h, video_file):
 
     return (message, porcent, msg_file, s, download)
 
+# -- Clase play_video - Controlar eventos -----------------------
 class play_video(xbmc.Player):
 
     def __init__( self, *args, **kwargs ):
@@ -318,6 +449,10 @@ class play_video(xbmc.Player):
     def is_ended(self):
         self.ended = True
 
+# -- Conseguir el nombre un alchivo de vídeo del metadata -------
+# -- El más gordo o uno de los más gordo se entiende que es el  -
+# -- vídeo o es vídeo que se usará como referencia para el tipo -
+# -- de archivo                                                 -
 def get_video_file( info ):
     size_file = 0
     for i, f in enumerate(info.files()):
@@ -327,6 +462,7 @@ def get_video_file( info ):
             index_file = i
     return index_file, video_file, size_file
 
+# -- Listado de selección del vídeo a prioritarizar -------------
 def get_video_files_sizes( info ):
 
     opciones = []
@@ -334,15 +470,8 @@ def get_video_files_sizes( info ):
     vfile_size = {}
 
     for i, f in enumerate( info.files() ):
-        _title = f.path.decode('utf-8')
-        _title = re.sub(r'(.*? )- Temporada (\d+) Completa(.*?)',
-                        r'\1T\2\3',
-                        _title)
-        info.rename_file( i, _title )
-
-    for i, f in enumerate( info.files() ):
         _index = int(i)
-        _title = f.path.replace("\\","/")
+        _title = f.path.replace("\\","/").decode('utf-8')
         _size = f.size
         _offset = f.offset
 
@@ -376,6 +505,7 @@ def get_video_files_sizes( info ):
 
     return seleccion, vfile_name[seleccion], vfile_size[seleccion]
 
+# -- Preguntar si se desea borrar lo descargado -----------------
 def remove_files( download, torrent_file, video_file, ses, h ):
 
     dialog_view = False
@@ -394,17 +524,25 @@ def remove_files( download, torrent_file, video_file, ses, h ):
         d = xbmcgui.Dialog()
         ok = d.yesno('pelisalacarta-MCT', 'Borrar las descargas del video', video_file)
 
+        # -- SI -------------------------------------------------
         if ok:
+            # -- Borrar archivo - torrent -----------------------
             if torrent:
                 os.remove( torrent_file )
+            # -- Borrar carpeta/archivos y sesión - vídeo -------
             ses.remove_torrent( h, 1 )
         else:
+            # -- Borrar sesión ----------------------------------
             ses.remove_torrent( h )
     else:
+        # -- Borrar sesión ----------------------------------
         ses.remove_torrent( h )
 
     return
 
+# -- Descargar de la web los datos para crear el torrent --------
+# -- Si queremos aligerar el script mct.py se puede importar la -
+# -- función del conentor torrent.py                            -
 def url_get(url, params={}, headers={}):
     from contextlib import closing
 
@@ -430,21 +568,85 @@ def url_get(url, params={}, headers={}):
     except urllib2.HTTPError:
         return None
 
-def count_completed_continuous_pieces(h, piece_set):
-    not_zero = 0
+# -- Procedimiento para log de have_piece en las -----------
+# -- pruebas                                               -
+def print_have_piece_set(h, piece_set):
+    c = 0
+    _print = "##### %s piezas descargadas de %s\n" % ( h.status().num_pieces, len(piece_set) )
     for i, _set in enumerate(piece_set):
-        if not h.have_piece(_set): break
-        else: not_zero = 1
-    return i + not_zero
+        if h.have_piece(_set):
+            _print+= "[%s]" % str(_set).zfill(5)
+        else: _print+= "[XXXXX]"
+        c+= 1
+        if c == 20:
+            c = 0
+            _print+= "\n"
+    print _print
 
-def set_priority_pieces(h, _index, video_file, video_size):
+def cluster_stat(h, _start, _end, _log=False):
+    _cluster = True
+    if _log: _print = "##### range( %s, %s )\n##### " % ( _start, _end )
+    for i in range( _start, _end ):
+        if _log: _print+= "[%s:%s]" % ( i, h.have_piece(i) )
+        _cluster&= h.have_piece(i)
+    return _cluster
+
+def cluster_set(h, _cluster_pieces, piece_set, _set, _log=False):
+    if _log: _print = "##########################################################################################\n"
+    if _log: _print+= "_cluster_pieces: %s\n" % _cluster_pieces
+    if _log: _print+= "------------------------------------------------------------------------------------------\n"
+    if _cluster_pieces > len(piece_set) - 1:
+        _cluster_pieces = len(piece_set) - 1
+    if _log: _print+= "cluster[%s:%s]\n" % ( str(piece_set[_cluster_pieces - __pieces__]).zfill(5), str(piece_set[_cluster_pieces] - 1).zfill(5) )
+    for i in range( _cluster_pieces - __pieces__, _cluster_pieces ):
+        if _log: _print+= "h.piece_priority( piece_set[%s], %s )\n" % ( i, _set )
+        h.piece_priority( piece_set[i], _set )
+        #if _log: _print+= "[%s]" % h.piece_priority(piece_set[i])
+    if _log: print _print
+    if _log: _print+= "\n##########################################################################################"
+
+def set_porcentage_to_play(video_size):
+    default_porcent_to_play = 0.50
+    if video_size >  1000000000: default_porcent_to_play = 0.50
+    if video_size >  1500000000: default_porcent_to_play = 0.60
+    if video_size >  2500000000: default_porcent_to_play = 0.70
+    if video_size >  5000000000: default_porcent_to_play = 0.75
+    if video_size > 10000000000: default_porcent_to_play = 0.20
+    if video_size > 15000000000: default_porcent_to_play = 0.175
+    if video_size > 20000000000: default_porcent_to_play = 0.125
+    return (video_size/(video_size * 0.4)) * default_porcent_to_play
+
+def set_priority_pieces(h, _index, video_file, video_size, _log=False):
+    if _log:
+        print "#### h.file_priorities() ## %s ##" % h.file_priorities()
+        print "#### h.piece_priorities() ## %s ##" % h.piece_priorities()
+        print "#### _index ## %s ##" % _index
+        print "#### video_file ## %s ##" % video_file.encode('ascii','ignore')
+        print "#### video_size ## %s ##" % video_size
 
     for i, _set in enumerate(h.file_priorities()):
-        if i != _index: h.file_priority(i,0)
-        else: h.file_priority(i,1)
+        if i != _index:
+            h.file_priority(i,0)
+        else:
+            h.file_priority(i,1)
 
     piece_set = []
     for i, _set in enumerate(h.piece_priorities()):
-        if _set == 1: piece_set.append(i)
+        if _set == 1:
+            piece_set.append(i)
+
+    #-- Prioritarizar los tres primeros clusters ----------------
+    for i in range(0,__pieces__):
+        h.piece_priority( piece_set[i], 7 )
+    for i in range(__pieces__,__pieces__*2):
+        h.piece_priority( piece_set[i], 6 )
+    for i in range(__pieces__*2,__pieces__*3):
+        h.piece_priority( piece_set[i], 5 )
+    for i in range(len(piece_set)-__pieces__,len(piece_set)):
+        h.piece_priority( piece_set[i], 7 )
+
+    if _log:
+        print "#### h.file_priorities() ## %s ##" % h.file_priorities()
+        print "#### h.piece_priorities() ## %s ##" % h.piece_priorities()
 
     return piece_set
