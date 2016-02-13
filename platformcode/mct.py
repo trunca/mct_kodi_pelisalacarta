@@ -25,7 +25,7 @@ time_sleep = 2
 
 __pieces__ = 5
 
-def play(url, is_view=None):
+def play(url, subtitle, is_view=None):
 
     # -- Necesario para algunas webs -------------------------- -
     if not url.endswith(".torrent") and not url.startswith("magnet"):
@@ -255,11 +255,13 @@ def play(url, is_view=None):
             # -- Player - Ver el vídeo --------------------------
             player = play_video()
             player.play( os.path.join( save_path_videos, video_file ) )
-
+            sub = False
             # -- Segundo bucle - Player - Control de eventos ----
             while player.isPlaying():
                 xbmc.sleep(100)
-
+                if subtitle!="" and sub is False:
+                    sub = True
+                    player.setSubtitles(subtitle)
                 # -- Añadido: Log para las pruebas --------------
                 # -- Print log have_piece. Procedimiento al     -
                 # -- final del archivo                          -
