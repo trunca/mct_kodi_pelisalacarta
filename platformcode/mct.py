@@ -58,9 +58,7 @@ from core import scrapertools
 from platformcode import library
 
 
-def play(url, xlistitem={}, is_view=None, subtitle=""):
-
-    DOWNLOAD_PATH = config.get_setting("downloadpath")
+def play(url, xlistitem={}, is_view=None, subtitle="", allocate=allocate):
 
     # -- adfly: No soportado ------------------------------------
     if url.startswith("http://adf.ly/"):
@@ -345,8 +343,6 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                 if xbmc.Player().isPlaying():
 
                     # -- Porcentage del progreso del vídeo ------
-                    player_getTime = player.getTime()
-                    player_getTotalTime = player.getTotalTime()
                     porcent_time = player.getTime() / player.getTotalTime() * 100
 
                     # -- Pieza que se está reproduciendo --------
