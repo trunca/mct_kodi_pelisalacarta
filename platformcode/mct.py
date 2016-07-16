@@ -60,6 +60,10 @@ from platformcode import library
 
 def play(url, xlistitem={}, is_view=None, subtitle="", allocate=allocate):
 
+    DOWNLOAD_PATH = config.get_setting("downloadpath")
+    if DOWNLOAD_PATH.upper().startswith("SMB://"):
+        DOWNLOAD_PATH = "K:\\xbmc\\pelisalacarta\\descargas"
+
     # -- adfly: No soportado ------------------------------------
     if url.startswith("http://adf.ly/"):
         xbmc.log( "XXX MCT - check url adfly XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" )
@@ -79,8 +83,8 @@ def play(url, xlistitem={}, is_view=None, subtitle="", allocate=allocate):
             url = t_file
 
     # -- Crear dos carpetas en descargas para los archivos ------
-    save_path_videos = os.path.join( config.get_setting("downloadpath") , "torrent-videos" )
-    save_path_torrents = os.path.join( config.get_setting("downloadpath") , "torrent-torrents" )
+    save_path_videos = os.path.join( DOWNLOAD_PATH , "torrent-videos" )
+    save_path_torrents = os.path.join( DOWNLOAD_PATH , "torrent-torrents" )
     if not os.path.exists( save_path_torrents ): os.mkdir(save_path_torrents)
 
     # -- Usar - archivo torrent desde web, meagnet o HD ---------
@@ -239,7 +243,7 @@ def play(url, xlistitem={}, is_view=None, subtitle="", allocate=allocate):
     # -- Prioritarizar o seleccionar las piezas del archivo que -
     # -- se desea reproducir con 'file_priorities'              -
     piece_set = set_priority_pieces(h, _index, video_file, video_size,
-                                    porcent4first_pieces, porcent4last_pieces, True)
+                                    porcent4first_pieces, porcent4last_pieces, allocate)
 
     # -- Crear diálogo de progreso para el primer bucle ---------
     dp = xbmcgui.DialogProgress()
@@ -343,6 +347,8 @@ def play(url, xlistitem={}, is_view=None, subtitle="", allocate=allocate):
                 if xbmc.Player().isPlaying():
 
                     # -- Porcentage del progreso del vídeo ------
+                    player_getTime = player.getTime()
+                    player_getTotalTime = player.getTotalTime()
                     porcent_time = player.getTime() / player.getTotalTime() * 100
 
                     # -- Pieza que se está reproduciendo --------
