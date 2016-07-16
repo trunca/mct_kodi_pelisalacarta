@@ -32,14 +32,26 @@ import tempfile
 import urllib
 import urllib2
 
+
+allocate = True
 try:
-    from python_libtorrent import get_libtorrent
+    from lib.python_libtorrent import get_libtorrent, get_platform
     lt = get_libtorrent()
+    _platform = get_platform()
+    if _platform['system'] in ["android_armv7", "linux_armv6", "linux_armv7"]:
+        allocate = False
 except Exception, e:
     import libtorrent as lt
+    _platform = ""
+
 
 import xbmc
 import xbmcgui
+
+xbmc.log("XXX platform XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+xbmc.log("_platform['system']: %s" % _platform['system'])
+xbmc.log("allocate: %s" % allocate)
+xbmc.log("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX platform XXXX")
 
 from core import config
 from core import scrapertools
@@ -47,6 +59,17 @@ from platformcode import library
 
 
 def play(url, xlistitem={}, is_view=None, subtitle=""):
+
+    DOWNLOAD_PATH = config.get_setting("downloadpath")
+
+    # -- adfly: No soportado ------------------------------------
+    if url.startswith("http://adf.ly/"):
+        xbmc.log( "XXX MCT - check url adfly XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" )
+        xbmc.log( " adfly no soportado: %s" % url )
+        xbmc.log( "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" )
+        ddd = xbmcgui.Dialog()
+        ddd.ok( "pelisalacarta-MCT: Sin soporte adf.ly", "El script no tiene soporte para el acortador de urls adf.ly.", "", "url: " + url )
+        return
 
     # -- Necesario para algunas webs ----------------------------
     if not url.endswith(".torrent") and not url.startswith("magnet"):
@@ -68,8 +91,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
         data = url_get(url)
         # -- El nombre del torrent será el que contiene en los --
         # -- datos.                                             -
-        re_name = library.title_to_filename( urllib.unquote( scrapertools.get_match(data,':name\d+:(.*?)\d+:') ) )
-        #torrent_file = os.path.join(save_path_torrents, re_name+'.torrent')
+        re_name = library.title_to_folder_name( urllib.unquote( scrapertools.get_match(data,':name\d+:(.*?)\d+:') ) )
         torrent_file = os.path.join(save_path_torrents, unicode(re_name, "'utf-8'", errors="replace")+'.torrent')
 
         f = open(torrent_file,'wb')
@@ -86,9 +108,9 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
     # -- MCT - MiniClienteTorrent -------------------------------
     ses = lt.session()
 
-    print "### Init session ########"
-    print lt.version
-    print "#########################"
+    xbmc.log("### Init session ########")
+    xbmc.log(lt.version)
+    xbmc.log("#########################")
 
     ses.add_dht_router("router.bittorrent.com",6881)
     ses.add_dht_router("router.utorrent.com",6881)
@@ -154,7 +176,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
         dp.close()
         info = h.get_torrent_info()
         data = lt.bencode( lt.create_torrent(info).generate() )
-        #torrent_file = os.path.join(save_path_torrents, info.name() + ".torrent")
+
         torrent_file = os.path.join(save_path_torrents, unicode(info.name(), "'utf-8'", errors="replace") + ".torrent")
         f = open(torrent_file,'wb')
         f.write(data)
@@ -170,17 +192,18 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
     # -- El más gordo o uno de los más gordo se entiende que es -
     # -- el vídeo o es el vídeo que se usará como referencia    -
     # -- para el tipo de archivo                                -
-    print "##### Archivos ## %s ##" % len(info.files())
+    xbmc.log("##### Archivos ## %s ##" % len(info.files()))
     _index_file, _video_file, _size_file = get_video_file(info)
 
     _video_file_ext = os.path.splitext( _video_file )[1]
-    print "##### _video_file_ext ## %s ##" % _video_file_ext
-    if _video_file_ext == ".avi" or _video_file_ext == ".mp4":
-        print "##### storage_mode_t.storage_mode_allocate ("+_video_file_ext+") #####"
+    xbmc.log("##### _video_file_ext ## %s ##" % _video_file_ext)
+    if (_video_file_ext == ".avi" or _video_file_ext == ".mp4") and allocate:
+        xbmc.log("##### storage_mode_t.storage_mode_allocate ("+_video_file_ext+") #####")
         h = ses.add_torrent( { 'ti':info, 'save_path': save_path_videos, 'trackers':trackers, 'storage_mode':lt.storage_mode_t.storage_mode_allocate } )
     else:
-        print "##### storage_mode: none ("+_video_file_ext+") #####"
+        xbmc.log("##### storage_mode_t.storage_mode_sparse ("+_video_file_ext+") #####")
         h = ses.add_torrent( { 'ti':info, 'save_path': save_path_videos, 'trackers':trackers, 'storage_mode':lt.storage_mode_t.storage_mode_sparse } )
+        allocate = True
     # -----------------------------------------------------------
 
     # -- Descarga secuencial - trozo 1, trozo 2, ... ------------
@@ -205,17 +228,20 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
     porcent4first_pieces = int( video_size * 0.000000005 )
     if porcent4first_pieces < 10: porcent4first_pieces = 10
     if porcent4first_pieces > 100: porcent4first_pieces = 100
+    porcent4last_pieces = int(porcent4first_pieces/2)
 
     num_pieces_to_resume = int( video_size * 0.0000000025 )
     if num_pieces_to_resume < 5: num_pieces_to_resume = 5
     if num_pieces_to_resume > 25: num_pieces_to_resume = 25
 
-    print "##### porcent4first_pieces ## %s ##" % porcent4first_pieces
-    print "##### num_pieces_to_resume ## %s ##" % num_pieces_to_resume
+    xbmc.log("##### porcent4first_pieces ## %s ##" % porcent4first_pieces)
+    xbmc.log("##### porcent4last_pieces ## %s ##" % porcent4last_pieces)
+    xbmc.log("##### num_pieces_to_resume ## %s ##" % num_pieces_to_resume)
 
     # -- Prioritarizar o seleccionar las piezas del archivo que -
     # -- se desea reproducir con 'file_priorities'              -
-    piece_set = set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
+    piece_set = set_priority_pieces(h, _index, video_file, video_size,
+                                    porcent4first_pieces, porcent4last_pieces, True)
 
     # -- Crear diálogo de progreso para el primer bucle ---------
     dp = xbmcgui.DialogProgress()
@@ -248,16 +274,25 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
             _p+= "[%s:%s]" % ( i, h.have_piece(i) )
             first_pieces&= h.have_piece(i)
             if h.have_piece(i): _c+= 1
-        _pieces_info = {'current': 0, 'continuous': "%s/%s" % (_c,porcent4first_pieces), 'have': h.status().num_pieces, 'len': len(piece_set)}
+        _pieces_info = {'current': 0, 'continuous': "%s/%s" % (_c,porcent4first_pieces), 'continuous2': "", 'have': h.status().num_pieces, 'len': len(piece_set)}
         _p = "##### first_pieces [%s/%s][%s]: " % ( _c, porcent4first_pieces, len(piece_set) ) + _p
-        print _p
+        xbmc.log(_p)
+
         last_pieces = True
-        for i in range(len(piece_set)-5,len(piece_set)):
-            last_pieces &= h.have_piece(i)
+        if not allocate:
+            _p = ""
+            _c = len(piece_set)-1; _cc = 0
+            for i in range(len(piece_set)-porcent4last_pieces,len(piece_set)):
+                _p+= "[%s:%s]" % ( i, h.have_piece(i) )
+                last_pieces &= h.have_piece(i)
+                if h.have_piece(i): _c-= 1; _cc+=1
+            _pieces_info['continuous2'] = "[%s/%s] " % (_cc,porcent4last_pieces)
+            _p = "##### last_pieces [%s/%s][%s]: " % ( len(piece_set)-1-porcent4last_pieces+_cc, len(piece_set)-1, len(piece_set) ) + _p
+            xbmc.log(_p)
         # -- -------------------------------------------------- -
 
         if is_view != "Ok" and first_pieces and last_pieces:
-            print "##### porcent [%.2f%%]" % (s.progress * 100)
+            xbmc.log("##### porcent [%.2f%%]" % (s.progress * 100))
             is_view = "Ok"
             dp.close()
 
@@ -310,6 +345,8 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                 if xbmc.Player().isPlaying():
 
                     # -- Porcentage del progreso del vídeo ------
+                    player_getTime = player.getTime()
+                    player_getTotalTime = player.getTotalTime()
                     porcent_time = player.getTime() / player.getTotalTime() * 100
 
                     # -- Pieza que se está reproduciendo --------
@@ -329,6 +366,12 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                     _TotalTime = player.getTotalTime()
                     _Time = player.getTime()
                     _print_log = "\n##### Player ##################################"
+                    _print_log+= "\nKODI:"
+                    _print_log+= "\nplayer.getTime: %s" % player_getTime
+                    _print_log+= "\nplayer.getTotalTime: %s" % player_getTotalTime
+                    _print_log+= "\n-----------------------------------------------"
+                    _print_log+= "\n-----------------------------------------------"
+                    _print_log+= "\nMCT:"
                     _print_log+= "\nTamaño del vídeo: %s" % video_size
                     _print_log+= "\nTotal piezas: %s" % len(piece_set)
                     _print_log+= "\nPiezas contiguas: %s" % continuous_pieces
@@ -350,9 +393,9 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                         _print_log+= "\n    current_piece = %s" % current_piece
                         _print_log+= "\n    continuous_pieces = %s" % continuous_pieces
                     _print_log+= "\n###############################################"
-                    print _print_log
+                    xbmc.log(_print_log)
                     # -------------------------------------------
-                    _pieces_info = {'current': current_piece, 'continuous': continuous_pieces, 'have': h.status().num_pieces, 'len': len(piece_set)}
+                    _pieces_info = {'current': current_piece, 'continuous': _pieces_info['continuous2'], 'continuous2': _pieces_info['continuous2'], 'have': h.status().num_pieces, 'len': len(piece_set)}
 
                 # -- Cerrar el diálogo de progreso --------------
                 if player.resumed:
@@ -427,7 +470,8 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                     return
                 else:
                     # -- Lista de archivos. Diálogo de opciones -
-                    piece_set = set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
+                    piece_set = set_priority_pieces(h, _index, video_file, video_size,
+                                                    porcent4first_pieces, porcent4last_pieces, allocate)
                     is_view=None
                     dp = xbmcgui.DialogProgress()
                     dp.create('pelisalacarta-MCT')
@@ -449,7 +493,8 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                 return
             else:
                 # -- Lista de archivos. Diálogo de opciones -----
-                piece_set = set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
+                piece_set = set_priority_pieces(h, _index, video_file, video_size,
+                                                porcent4first_pieces, porcent4last_pieces, allocate)
                 is_view=None
                 dp = xbmcgui.DialogProgress()
                 dp.create('pelisalacarta-MCT')
@@ -466,8 +511,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
 def getProgress(h, video_file, _pf={}):
 
     if len(_pf) > 0:
-        #_pf_msg = "[%s] [%s] [%s] [%s][CR]" % (_pf['current'], _pf['continuous'], _pf['have'], _pf['len'])
-        _pf_msg = "[%s] [%s] [%s] [%s]" % (_pf['current'], _pf['continuous'], _pf['have'], _pf['len'])
+        _pf_msg = "[%s] [%s] %s[%s] [%s]" % (_pf['current'], _pf['continuous'], _pf['continuous2'], _pf['have'], _pf['len'])
     else: _pf_msg = ""
 
     s = h.status()
@@ -483,10 +527,8 @@ def getProgress(h, video_file, _pf={}):
     download = ( s.progress * 100 )
 
     if "/" in video_file: video_file = video_file.split("/")[1]
-    #msg_file = "..../"+video_file + " - %.2f MB" % (s.total_wanted/1048576.0)
-    #msg_file = video_file + " - %.2f MB" % (s.total_wanted/1048576.0)
     msg_file = video_file
-    #msg_file = "[%s] "%len(msg_file)+_pf_msg+msg_file
+
     if len(msg_file) > 50:
         msg_file = msg_file.replace( video_file, os.path.splitext(video_file)[0][:40] + "... " + os.path.splitext(video_file)[1] )
     msg_file = msg_file + "[CR]" + "%.2f MB" % (s.total_wanted/1048576.0) + " - " + _pf_msg
@@ -544,10 +586,7 @@ def get_video_files_sizes( info ):
     vfile_size = {}
 
     for i, f in enumerate( info.files() ):
-        #_title = f.path
-        #try: _title = f.path.encode('iso-8859-1')
-        #except: _title = f.path.decode('utf-8')
-        #_title = f.path.encode('iso-8859-1')
+
         _title = unicode(f.path, "iso-8859-1", errors="replace")
         _title = unicode(f.path, "'utf-8'", errors="replace")
 
@@ -617,15 +656,15 @@ def remove_files( download, torrent_file, video_file, ses, h ):
                 os.remove( torrent_file )
             # -- Borrar carpeta/archivos y sesión - vídeo -------
             ses.remove_torrent( h, 1 )
-            print "### End session #########"
+            xbmc.log("### End session #########")
         else:
             # -- Borrar sesión ----------------------------------
             ses.remove_torrent( h )
-            print "### End session #########"
+            xbmc.log("### End session #########")
     else:
         # -- Borrar sesión --------------------------------------
         ses.remove_torrent( h )
-        print "### End session #########"
+        xbmc.log("### End session #########")
 
     return
 
@@ -668,7 +707,7 @@ def print_have_piece_set(h, piece_set):
         if c == 20:
             c = 0
             _print+= "\n"
-    print _print
+    xbmc.log(_print)
 
 # -- Contar las piezas contiguas completas del vídeo ------------
 def count_completed_continuous_pieces(h, piece_set):
@@ -682,7 +721,8 @@ def count_completed_continuous_pieces(h, piece_set):
 # -- desea reproducir con 'file_priorities' estableciendo a 1   -
 # -- el archivo deseado y a 0 el resto de archivos almacenando  -
 # -- en una lista los índices de de las piezas del archivo      -
-def set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces):
+def set_priority_pieces(h, _index, video_file, video_size,
+                        porcent4first_pieces, porcent4last_pieces, allocate):
 
     for i, _set in enumerate(h.file_priorities()):
         if i != _index: h.file_priority(i,0)
@@ -692,10 +732,11 @@ def set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
     for i, _set in enumerate(h.piece_priorities()):
         if _set == 1: piece_set.append(i)
 
-    for i in range(0,porcent4first_pieces):
-        h.set_piece_deadline(piece_set[i],10000)
+    if not allocate:
+        for i in range(0,porcent4first_pieces):
+            h.set_piece_deadline(piece_set[i],10000)
 
-    for i in range(len(piece_set)-5,len(piece_set)):
-        h.set_piece_deadline(piece_set[i],10000)
+        for i in range(len(piece_set)-porcent4last_pieces,len(piece_set)):
+            h.set_piece_deadline(piece_set[i],10000)
 
     return piece_set
