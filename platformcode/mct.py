@@ -1,24 +1,50 @@
 # -*- coding: utf-8 -*-
-#------------------------------------------------------------
-# pelisalacarta - XBMC Plugin
-# MCT - Mini Cliente Torrent para pelisalacarta
+# ------------------------------------------------------------
+# pelisalacarta 4
+# Copyright 2015 tvalacarta@gmail.com
 # http://blog.tvalacarta.info/plugin-xbmc/pelisalacarta/
+#
+# Distributed under the terms of GNU General Public License v3 (GPLv3)
+# http://www.gnu.org/licenses/gpl-3.0.html
+# ------------------------------------------------------------
+# This file is part of pelisalacarta 4.
+#
+# pelisalacarta 4 is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# pelisalacarta 4 is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with pelisalacarta 4.  If not, see <http://www.gnu.org/licenses/>.
+# ------------------------------------------------------------
+# MCT - Mini Cliente Torrent para pelisalacarta
 #------------------------------------------------------------
-import urlparse,urllib2,urllib,re
+
 import os
-import sys
+import re
+import shutil
+import tempfile
+import urllib
+import urllib2
 
-import shutil, tempfile
-
-import libtorrent as lt
+try:
+    from python_libtorrent import get_libtorrent
+    lt = get_libtorrent()
+except Exception, e:
+    import libtorrent as lt
 
 import xbmc
 import xbmcgui
 
+from core import config
+from core import scrapertools
 from platformcode import library
 
-from core import scrapertools
-from core import config
 
 def play(url, xlistitem={}, is_view=None, subtitle=""):
 
@@ -42,7 +68,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
         data = url_get(url)
         # -- El nombre del torrent será el que contiene en los --
         # -- datos.                                             -
-        re_name = library.title_to_folder_name( urllib.unquote( scrapertools.get_match(data,':name\d+:(.*?)\d+:') ) )
+        re_name = library.title_to_filename( urllib.unquote( scrapertools.get_match(data,':name\d+:(.*?)\d+:') ) )
         #torrent_file = os.path.join(save_path_torrents, re_name+'.torrent')
         torrent_file = os.path.join(save_path_torrents, unicode(re_name, "'utf-8'", errors="replace")+'.torrent')
 
@@ -117,6 +143,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
         dp = xbmcgui.DialogProgress()
         dp.create('pelisalacarta-MCT')
         while not h.has_metadata():
+            h.force_dht_announce()
             message, porcent, msg_file, s, download = getProgress(h, "Creando torrent desde magnet")
             dp.update(porcent, message, msg_file)
             if s.state == 1: download = 1
@@ -188,7 +215,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
 
     # -- Prioritarizar o seleccionar las piezas del archivo que -
     # -- se desea reproducir con 'file_priorities'              -
-    piece_set = set_priority_pieces(h, _index, video_file, video_size)
+    piece_set = set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
 
     # -- Crear diálogo de progreso para el primer bucle ---------
     dp = xbmcgui.DialogProgress()
@@ -224,9 +251,12 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
         _pieces_info = {'current': 0, 'continuous': "%s/%s" % (_c,porcent4first_pieces), 'have': h.status().num_pieces, 'len': len(piece_set)}
         _p = "##### first_pieces [%s/%s][%s]: " % ( _c, porcent4first_pieces, len(piece_set) ) + _p
         print _p
+        last_pieces = True
+        for i in range(len(piece_set)-5,len(piece_set)):
+            last_pieces &= h.have_piece(i)
         # -- -------------------------------------------------- -
 
-        if is_view != "Ok" and first_pieces:
+        if is_view != "Ok" and first_pieces and last_pieces:
             print "##### porcent [%.2f%%]" % (s.progress * 100)
             is_view = "Ok"
             dp.close()
@@ -397,7 +427,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                     return
                 else:
                     # -- Lista de archivos. Diálogo de opciones -
-                    piece_set = set_priority_pieces(h, _index, video_file, video_size)
+                    piece_set = set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
                     is_view=None
                     dp = xbmcgui.DialogProgress()
                     dp.create('pelisalacarta-MCT')
@@ -419,7 +449,7 @@ def play(url, xlistitem={}, is_view=None, subtitle=""):
                 return
             else:
                 # -- Lista de archivos. Diálogo de opciones -----
-                piece_set = set_priority_pieces(h, _index, video_file, video_size)
+                piece_set = set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces)
                 is_view=None
                 dp = xbmcgui.DialogProgress()
                 dp.create('pelisalacarta-MCT')
@@ -652,7 +682,7 @@ def count_completed_continuous_pieces(h, piece_set):
 # -- desea reproducir con 'file_priorities' estableciendo a 1   -
 # -- el archivo deseado y a 0 el resto de archivos almacenando  -
 # -- en una lista los índices de de las piezas del archivo      -
-def set_priority_pieces(h, _index, video_file, video_size):
+def set_priority_pieces(h, _index, video_file, video_size, porcent4first_pieces):
 
     for i, _set in enumerate(h.file_priorities()):
         if i != _index: h.file_priority(i,0)
@@ -661,5 +691,11 @@ def set_priority_pieces(h, _index, video_file, video_size):
     piece_set = []
     for i, _set in enumerate(h.piece_priorities()):
         if _set == 1: piece_set.append(i)
+
+    for i in range(0,porcent4first_pieces):
+        h.set_piece_deadline(piece_set[i],10000)
+
+    for i in range(len(piece_set)-5,len(piece_set)):
+        h.set_piece_deadline(piece_set[i],10000)
 
     return piece_set
